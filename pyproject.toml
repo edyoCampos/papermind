@@ -1,0 +1,33 @@
+[project]
+name = "papermind"
+version = "0.1.0"
+description = "PaperMind: assistente multiagente para ler artigos científicos em PDF"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "fastapi",
+  "httpx",
+  "langchain-core",
+  "langchain-ollama",
+  "langchain-text-splitters",
+  "langgraph",
+  "pgvector",
+  "psycopg[binary]",
+  "pydantic-settings",
+  "pypdf",
+  "python-multipart",
+  "redis",
+  "streamlit",
+  "uvicorn",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+addopts = "-m 'not integration'"
+markers = ["integration: precisa dos serviços reais do Compose"]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.uv]
+package = false

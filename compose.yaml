@@ -1,0 +1,88 @@
+# Ambiente do PaperMind: um bloco por serviço (ver _reversa_sdd/sdd/ambiente-local.md §8.2).
+name: papermind
+services:
+  # Banco relacional com a extensão pgvector (busca por similaridade).
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg16
+    env_file: .env
+    volumes: [pg_data:/var/lib/postgresql/data]
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      retries: 20
+
+  # Cache de consultas, sem persistência em disco.
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  # Modelos locais (só CPU). Os modelos ficam no volume ollama_models.
+  ollama:
+    image: ollama/ollama:0.40.12
+    environment:
+      OLLAMA_HOST: "0.0.0.0:11434"
+      OLLAMA_KEEP_ALIVE: 30m
+      OLLAMA_MAX_LOADED_MODELS: "2"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_CONTEXT_LENGTH: "4096"
+    volumes: [ollama_models:/root/.ollama]
+    mem_limit: 6g
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      retries: 30
+
+  # Baixa os modelos só se ainda não existirem; termina com código 0.
+  ollama-init:
+    image: ollama/ollama:0.40.12
+    env_file: .env
+    environment: {OLLAMA_HOST: "http://ollama:11434"}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for m in "$${CHAT_MODEL}" "$${EMBEDDING_MODEL}"; do
+          if ollama show "$$m" >/dev/null 2>&1; then echo "modelo presente: $$m";
+          else echo "baixando: $$m" && ollama pull "$$m" || exit 1; fi;
+        done
+    depends_on:
+      ollama: {condition: service_healthy}
+    restart: "no"
+
+  # API (FastAPI + LangGraph + RAG). Cria o esquema antes de iniciar.
+  app:
+    build: .
+    image: papermind-app:dev
+    env_file: .env
+    command: ["sh", "-c", "python -m scripts.init_db && uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app"]
+    ports: ["127.0.0.1:${APP_PORT:-8000}:8000"]
+    volumes: [./app:/app/app, ./frontend:/app/frontend, ./scripts:/app/scripts, ./tests:/app/tests, ./eval:/app/eval, ./data:/app/data]
+    mem_limit: 1536m
+    depends_on:
+      postgres: {condition: service_healthy}
+      ollama-init: {condition: service_completed_successfully}
+      redis: {condition: service_started, required: false}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      retries: 30
+
+  # Interface Streamlit; reusa a imagem do app.
+  frontend:
+    image: papermind-app:dev
+    env_file: .env
+    command: ["streamlit", "run", "frontend/app.py", "--server.address", "0.0.0.0", "--server.port", "8501", "--server.headless", "true"]
+    ports: ["127.0.0.1:${FRONTEND_PORT:-8501}:8501"]
+    volumes: [./frontend:/app/frontend]
+    mem_limit: 512m
+    depends_on:
+      app: {condition: service_healthy}
+
+volumes:
+  pg_data:
+  ollama_models:
